@@ -1,0 +1,110 @@
+#ifndef TOYOTA_COMS_H
+#define TOYOTA_COMS_H
+
+#include <ros/ros.h>
+#include <tf/tf.h>
+#include <nav_msgs/Odometry.h>
+#include <nav_msgs/Path.h>
+#include <std_msgs/Float32.h>
+#include <std_msgs/Float32MultiArray.h>
+
+class toyota_coms {
+
+public:
+  //toyota_coms(ros::NodeHandle& nh, ros::NodeHandle& nhPrivate);
+  toyota_coms();
+  virtual ~toyota_coms();
+
+  void vehicle_init();
+  double angledifference(double firstangle, double secondangle);
+  int checksign(double Ax,double Ay,double Bx,double By,double Cx,double Cy);
+  std_msgs::Float32MultiArray compute_ctr(const nav_msgs::Odometry& vehicleOdom, const nav_msgs::Path& plannedPath); // compute cross track error
+
+  //nav_msgs::Odometry vehicleOdom;
+  //nav_msgs::Path plannedPath;
+
+  // units: meter, m/s, m^2/s, degree, degree/s
+  struct vehicle{
+      int    weight;
+      double wheelR;          // wheel radius
+      double length;
+      double width;
+      double axelDist;        // axel distance
+      double height;
+      double maxV;            // maximum velocity for certain course
+      double minV;            // minimum velocity for certain course
+      double targetV;         // target velocity
+      double clampV;          // velocity clamp as safty limit
+      double floorV;          // velocity floor
+      double maxSteerWheelA;  // maximum steering wheel angle
+      double minSteerWheelA;
+      double maxSteerVehicA;  // maximum vehicle steering angle
+      double minSteerVehicA;
+      double turnR;             // turning radius
+      double maxAccel;          // maximum acceleration
+      double maxDecel;          // maximum deceleration
+      double steerRatio;        // steering ratio
+      double steerWheelRate;    // maximum rate steering wheel can be turned
+      double steerVehicleRate;  // maximum rate vehicle can be turned
+      double sK;                // steering gain
+  };
+
+  double minctr_dist;           // minimum croos track error distance before the path is considered as invalid
+
+  vehicle toyotaComs;
+
+  /*struct cmd{
+      std_msgs::Float32 steer_cmd;
+      std_msgs::Float32 drive_cmd;
+  };
+
+  cmd toyotaCmd;*/
+  double prev_steer_effort;
+  std_msgs::Float32MultiArray vehicle_cmd;
+
+};
+
+
+#endif
+
+
+//void vehiclePose_callback(const geometry_msgs::PoseStamped& pose_msg);
+//void vehicleOdom_callback(const nav_msgs::Odometry& odom_msg);
+
+//void plannedPath_callback(const std_msgs::StringConstPtr& path_msg);
+//void vrepInfo_callback(const vrep_common::VrepInfoConstPtr& vrepinfo_msg);
+
+//virtual void spin();
+//virtual void spinonce();
+//void lookuptf();
+//void process();
+
+//ros::NodeHandle nh_;
+//ros::NodeHandle nhPrivate_;
+
+//ros::Subscriber vehicle_pose_subscriber;
+//ros::Subscriber path_subscriber;
+//ros::Subscriber vrepinfo_subscriber;
+//ros::Subscriber vehicle_odometry_subscriber;
+
+//ros::Publisher signalPub;   // to be done
+//ros::Publisher breakPub;    // to be done
+//ros::Publisher steer_publisher;
+//ros::Publisher drive_Publisher;
+//ros::Publisher rvizMarkerpose_publisher;
+//ros::Publisher marker_publisher;
+
+//std_msgs::StringConstPtr path_msg_;
+//nav_msgs::Path path;
+
+//std::vector<double> decel;            //deceleration term associated to the path points
+//int decel_window_backward;            //deceleration window size
+//int decel_window_forward;             //deceleration window size
+//double dampingG;                      //velocity damping gain
+
+//geometry_msgs::TwistStamped vehicleTwist;
+//visualization_msgs::Marker marker;
+
+//bool valid_path_flag;
+//bool vrep_state;
+//bool new_path_flag;

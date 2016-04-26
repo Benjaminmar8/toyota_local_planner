@@ -1,0 +1,7 @@
+<library path="lib/libtoyota_localplanner">
+  <class name="toyota_localplanner/ToyotaLocalPlanner" type="toyota_localplanner::ToyotaLocalPlanner" base_class_type="nav_core::BaseLocalPlanner">
+    <description>
+      A implementation of a local planner for toyota coms autonomous driving
+    </description>
+  </class>
+</library>

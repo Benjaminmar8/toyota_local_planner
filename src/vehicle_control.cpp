@@ -1,0 +1,292 @@
+#include <ros/ros.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/TwistStamped.h>
+#include <nav_msgs/Path.h>
+#include <tf/transform_listener.h>
+#include <toyota_localplanner/vehicle_control.h>
+#include <math.h>
+#include <boost/accumulators/statistics/sum.hpp>
+
+#define PI 3.14159
+
+
+vehicle_control::vehicle_control(){
+
+}
+
+vehicle_control::~vehicle_control(){
+
+}
+
+void vehicle_control::vehicle_init(){
+
+}
+
+double vehicle_control::compute_steer(const nav_msgs::Odometry& vehicleOdom, const nav_msgs::Path& plannedPath, int id, double vehicle_pathpoint_dist, double prev_steer_effort){
+    double steer_effort = 0, delta_d = 0, delta_t = 0;
+    double vehicle_heading = tf::getYaw(vehicleOdom.pose.pose.orientation);
+    double path_heading  = tf::getYaw(plannedPath.poses.at(id).pose.orientation);
+    double front_axle_x = vehicleOdom.pose.pose.position.x; //+ cos(vehicle_heading)*1.5;   // TODO, use TF instead
+    double front_axle_y = vehicleOdom.pose.pose.position.y; //+ sin(vehicle_heading)*1.5;   // TODO, use TF instead
+
+    // path heading & angle difference (delta theta)
+    delta_t = vehicle_control::angledifference(vehicle_heading,path_heading);
+    double ctr = 0;
+    // compute cross track error
+if(id>=1){
+    double x0, y0, x1, y1, x2, y2;
+    x1 = plannedPath.poses.at(id-1).pose.position.x; y1 = plannedPath.poses.at(id-1).pose.position.y;
+    x2 = plannedPath.poses.at(id).pose.position.x; y2 = plannedPath.poses.at(id).pose.position.y;
+    x0 = front_axle_x; y0 = front_axle_y;
+    ctr = fabs((y2-y1)*x0 - (x2-x1)*y0 + x2*y1 -y2*x1)/sqrt((y2-y1)*(y2-y1) + (x2-x1)*(x2-x1));
+}
+else if(id == 0){
+    double x0, y0, x1, y1, x2, y2;
+    x1 = plannedPath.poses.at(id).pose.position.x; y1 = plannedPath.poses.at(id).pose.position.y;
+    x2 = plannedPath.poses.at(id+1).pose.position.x; y2 = plannedPath.poses.at(id+1).pose.position.y;
+    x0 = front_axle_x; y0 = front_axle_y;
+    ctr = fabs((y2-y1)*x0 - (x2-x1)*y0 + x2*y1 -y2*x1)/sqrt((y2-y1)*(y2-y1) + (x2-x1)*(x2-x1));
+}
+    // check cross track error validity
+    if(ctr>vehicle_pathpoint_dist){
+        ROS_WARN("Cross track error can't be larger than vehicle-pathpoint distance: %f, %f",ctr,vehicle_pathpoint_dist);
+        delta_d = vehicle_pathpoint_dist;
+    }
+    else
+        delta_d = ctr;
+
+    // compute steering effort
+    int sign_check = 0;
+    if(id == plannedPath.poses.size()-1){ // last point, chose id-1 point
+        sign_check = checksign(plannedPath.poses.at(id-1).pose.position.x, plannedPath.poses.at(id-1).pose.position.y,
+                     plannedPath.poses.at(id).pose.position.x, plannedPath.poses.at(id).pose.position.y,
+                     front_axle_x, front_axle_y);
+    }
+    else{ // first point, chose the id+1 point
+        sign_check = checksign(plannedPath.poses.at(id).pose.position.x, plannedPath.poses.at(id).pose.position.y,
+                     plannedPath.poses.at(id+1).pose.position.x, plannedPath.poses.at(id+1).pose.position.y,
+                     front_axle_x, front_axle_y);
+    }
+    if(sign_check == -1) delta_d = -delta_d; // change 1/-1 to modify steer behavior
+    steer_effort = std::min(std::max(-delta_t*control_paramters.steer_gain_theta*180/PI + atan(control_paramters.steer_gain*delta_d/(sqrt(pow(vehicleOdom.twist.twist.linear.x,2)+pow(vehicleOdom.twist.twist.linear.y,2))))*180/PI,vehicle_paramters.minSteerVehicA),
+                            vehicle_paramters.maxSteerVehicA) *  vehicle_paramters.steerRatio;
+
+    // which term contributes more steering action
+    std::cout<<"Steer "<<steer_effort<<" "<<-delta_t*180/PI*vehicle_paramters.steerRatio<<" "<<atan(control_paramters.steer_gain*delta_d/(sqrt(pow(vehicleOdom.twist.twist.linear.x,2)+pow(vehicleOdom.twist.twist.linear.y,2))))*180/PI*vehicle_paramters.steerRatio<<std::endl;
+
+    // steer rate limit
+    if(fabs(prev_steer_effort - steer_effort) >= control_paramters.steerWheelRate)
+    {
+        if(prev_steer_effort - steer_effort>=0)
+            steer_effort = prev_steer_effort - control_paramters.steerWheelRate;
+        else
+            steer_effort = prev_steer_effort + control_paramters.steerWheelRate;
+    }
+    // low pass filtering of control input, change gain to change cut off frequency
+    steer_effort = prev_steer_effort + control_paramters.steer_lp_gain * (steer_effort - prev_steer_effort);
+
+    std::cout<<"Misc "<<vehicle_heading<<" "<<path_heading<<" "<<-delta_t<<" "<<delta_d<<" "<<sign_check<<" "<<steer_effort<<std::endl;
+
+    // For debugging
+    //std::cout<<"1st term steer effort " << -delta_t*180/PI <<std::endl;
+    //std::cout<<"path heading: "<< path_heading<<" vehicle heading: "<<vehicle_heading<<std::endl;
+    //if(-delta_t*180/PI > 0 )
+    //   std::cout<< "steer to ##### RIGHT ##### " <<std::endl;
+    //else if(-delta_t*180/PI < 0)
+    //   std::cout<< "steer to ##### LEFT ##### " <<std::endl;
+
+
+    //std::cout<<"2nd term steer effort " << atan(control_paramters.steer_gain*delta_d/(sqrt(pow(vehicleOdom.twist.twist.linear.x,2)+pow(vehicleOdom.twist.twist.linear.y,2))))*180/PI <<std::endl;
+    //std::cout<<"sign check: "<< sign_check<<std::endl;
+    //if(id == plannedPath.poses.size()-1){ // last point, chose id-1 point
+    //    std::cout<<plannedPath.poses.at(id-1).pose.position.x<<" "<<plannedPath.poses.at(id-1).pose.position.y<<std::endl;
+    //    std::cout<<plannedPath.poses.at(id).pose.position.x<<" "<<plannedPath.poses.at(id).pose.position.y<<std::endl;
+    //    std::cout<<front_axle_x<<" "<<front_axle_y<<std::endl;
+    //}
+    //else{ // first point, chose the id+1 point
+    //    std::cout<<plannedPath.poses.at(id).pose.position.x<<" "<<plannedPath.poses.at(id).pose.position.y<<std::endl;
+    //    std::cout<<plannedPath.poses.at(id+1).pose.position.x<<" "<<plannedPath.poses.at(id+1).pose.position.y<<std::endl;
+    //    std::cout<<front_axle_x<<" "<<front_axle_y<<std::endl;
+    //}
+    //if(atan(control_paramters.steer_gain*delta_d/(sqrt(pow(vehicleOdom.twist.twist.linear.x,2)+pow(vehicleOdom.twist.twist.linear.y,2))))*180/PI > 0 )
+    //   std::cout<< "steer to $$$$$ RIGHT $$$$$ " <<std::endl;
+    //else if(atan(control_paramters.steer_gain*delta_d/(sqrt(pow(vehicleOdom.twist.twist.linear.x,2)+pow(vehicleOdom.twist.twist.linear.y,2))))*180/PI < 0)
+    //   std::cout<< "steer to $$$$$ LEFT $$$$$ " <<std::endl;
+
+    //std::cout<<"total steer effort " << steer_effort <<std::endl;
+    //if(steer_effort > 0 )
+    //   std::cout<< "steer to ***** RIGHT ****** " <<std::endl;
+    //else if(steer_effort < 0)
+    //   std::cout<< "steer to ***** LEFT ****** " <<std::endl;
+
+    return (steer_effort);
+}
+
+double vehicle_control::compute_drive(const nav_msgs::Odometry& vehicleOdom, double vehicle_canV, double vehicle_canStr,double target_velocity, double time_to_obs, double dist_to_obs, double prev_drive_effort){
+    double drive_effort = 0.0; // m/s, 0.6 *3600 = 2.16km/hr
+    double odomV = sqrt(pow(vehicleOdom.twist.twist.linear.x,2)+pow(vehicleOdom.twist.twist.linear.y,2));  // in m/s
+    double canV  = vehicle_canV;  // in km/hr
+    if(odomV > target_velocity || canV/3.6 > target_velocity){
+        drive_effort = prev_drive_effort - 3;
+        if (drive_effort <= 0) drive_effort = 0;
+        //std::cout<<"stroke -- : "<< drive_effort<<std::endl;
+    }
+    else{
+        drive_effort = prev_drive_effort + 3;
+        if(drive_effort >= 800) drive_effort = 800;
+       //std::cout<<"stroke ++ : "<< drive_effort<<std::endl;
+    }
+
+
+    drive_effort = 500.0 + 0.6* fabs(vehicle_canStr);
+    // Safety limit, 3m/s = 10.8km/hr
+    if(odomV > 2.0 || canV/3.6 > 2.0){
+        drive_effort = 0.0;
+        //std::cout<<"stroke = "<< drive_effort<<std::endl;
+    }
+
+    return drive_effort;
+}
+
+double vehicle_control::compute_brake(const nav_msgs::Odometry& vehicleOdom){
+    double brake_effort = 0;
+
+    return brake_effort;
+}
+
+
+
+/****** Utility Functions ******/
+double vehicle_control::angledifference(double firstangle, double secondangle){
+    double diff = secondangle - firstangle;
+    while(diff<-PI) diff+=2*PI;
+    while(diff>PI) diff-=2*PI;
+    return diff;
+}
+
+int vehicle_control::checksign(double Ax, double Ay, double Bx, double By, double Cx, double Cy){
+    double det = ((Bx - Ax)*(Cy - Ay) - (By - Ay)*(Cx - Ax));
+    if(det>0) return 1;
+    else if(det<0) return -1;
+    else return 0;
+}
+
+/*
+std_msgs::Float32MultiArray vehicle_control::compute_ctr(const nav_msgs::Odometry &vehicleOdom, const nav_msgs::Path &plannedPath){  // compute cross track error
+
+    double vehicle_heading = tf::getYaw(vehicleOdom.pose.pose.orientation);
+    double front_axle_x = vehicleOdom.pose.pose.position.x + cos(vehicle_heading)*toyotaComs.axelDist/2;   // shoudl use tf here?
+    double front_axle_y = vehicleOdom.pose.pose.position.y + sin(vehicle_heading)*toyotaComs.axelDist/2;
+
+    double dist = minctr_dist;
+    double ctr = 0;              // cross track error
+    unsigned int id = 0;         // path point id
+
+    // approximation method of cross track error using distance between vehicle points and path points
+    // step 1: find the nearest path point id
+    for(unsigned int i=0; i<plannedPath.poses.size(); i++){
+        double temp = sqrt(pow(front_axle_x - plannedPath.poses.at(i).pose.position.x,2) +
+                           pow(front_axle_y - plannedPath.poses.at(i).pose.position.y,2));
+        if(temp < dist){
+            dist = temp;
+            id = i;
+        }
+    }
+    if(dist == minctr_dist){
+        ROS_WARN("All points on path has a path-vehicle distance larger than %f, consider re-initialize or stop vehicle", minctr_dist);
+        //toyota_coms::vehicle_cmd.data.at(1) = 0.0;  // 1.0 m/s
+        //return vehicle_cmd; //  should return and stop the vehicle
+    }
+
+    // step 2: compute cross track error
+    if(id>0){
+        double x0, y0, x1, y1, x2, y2;
+        x1 = plannedPath.poses.at(id-1).pose.position.x; y1 = plannedPath.poses.at(id-1).pose.position.y;
+        x2 = plannedPath.poses.at(id).pose.position.x; y2 = plannedPath.poses.at(id).pose.position.y;
+        x0 = front_axle_x; //vehiclePose.pose.position.x + sin(vehicle_heading)*toyotaComs.axelDist/2;
+        y0 = front_axle_y; //vehiclePose.pose.position.y - cos(vehicle_heading)*toyotaComs.axelDist/2;
+        ctr = fabs((y2-y1)*x0 - (x2-x1)*y0 + x2*y1 -y2*x1)/sqrt((y2-y1)*(y2-y1) + (x2-x1)*(x2-x1));
+    }
+    else{
+        double x0, y0, x1, y1, x2, y2;
+        x1 = plannedPath.poses.at(id).pose.position.x; y1 = plannedPath.poses.at(id).pose.position.y;
+        x2 = plannedPath.poses.at(id+1).pose.position.x; y2 = plannedPath.poses.at(id+1).pose.position.y;
+        x0 = front_axle_x;//vehiclePose.pose.position.x + sin(vehicle_heading)*toyotaComs.axelDist/2;
+        y0 = front_axle_x;//vehiclePose.pose.position.y - cos(vehicle_heading)*toyotaComs.axelDist/2;
+        ctr = fabs((y2-y1)*x0 - (x2-x1)*y0 + x2*y1 -y2*x1)/sqrt((y2-y1)*(y2-y1) + (x2-x1)*(x2-x1));
+    }
+    if(ctr>dist) ROS_WARN("Cross track error can't be larger than vehicle-pathpoint distance: %f, %f",ctr,dist);  // shoudl return and stop the vehicle
+    dist = ctr;
+
+    double path_heading    = tf::getYaw(plannedPath.poses.at(id).pose.orientation);
+    double anglediff = toyota_coms::angledifference(vehicle_heading,path_heading);
+    std::cout<<"vehicle heading: " << vehicle_heading <<std::endl;
+    std::cout<<"path "<< id <<" heading: " << path_heading <<std::endl;
+    std::cout<<"angle diff: " << anglediff <<std::endl;
+    std::cout<<"cross track dist: "<< dist <<std::endl;
+
+    double steer_effort = 0;
+
+    if(fabs(vehicleOdom.twist.twist.linear.x)<=0.2 && fabs(vehicleOdom.twist.twist.linear.y)<=0.2){
+        //steer_effort = std::min(std::max(-anglediff*180/PI,toyotaComs.minSteerVehicA),toyotaComs.maxSteerVehicA);
+        steer_effort = prev_steer_effort;
+        std::cout<<"mode 1"<<std::endl;
+    }
+    else{
+        int sign_check = 0;
+        if(id == plannedPath.poses.size()-1){ // last point, chose id-1 point
+            sign_check = checksign(plannedPath.poses.at(id-1).pose.position.x, plannedPath.poses.at(id-1).pose.position.y,
+                         plannedPath.poses.at(id).pose.position.x, plannedPath.poses.at(id).pose.position.y,
+                         front_axle_x, front_axle_y);
+        }
+        else{ // first point, chose the id+1 point
+            sign_check = checksign(plannedPath.poses.at(id).pose.position.x, plannedPath.poses.at(id).pose.position.y,
+                         plannedPath.poses.at(id+1).pose.position.x, plannedPath.poses.at(id+1).pose.position.y,
+                         front_axle_x, front_axle_y);
+
+        }
+        if(sign_check == -1) dist = -dist; // change 1/-1 to modify steer behavior
+        steer_effort = std::min(std::max(-anglediff*180/PI + atan(toyotaComs.sK*dist/(fabs(vehicleOdom.twist.twist.linear.x)))*180/PI,toyotaComs.minSteerVehicA),
+                                toyotaComs.maxSteerVehicA);
+        std::cout<<"mode 2"<<std::endl;
+    }
+
+    //std::cout<<"steer effort: " << steer_effort*toyotaComs.steerRatio <<std::endl;
+    //std::cout<<"term 1: "<< anglediff*180/PI <<std::endl;
+    //std::cout<<"term 2: "<< atan(toyotaComs.sK*dist/(fabs(vehicleOdom.twist.twist.linear.x)))*180/PI << std::endl;
+    //if(steer_effort*toyotaComs.steerRatio > 0 )
+    //   std::cout<< "steer to ***** RIGHT ****** " <<std::endl;
+    //else if(steer_effort*toyotaComs.steerRatio < 0)
+    //   std::cout<< "steer to ***** LEFT ****** " <<std::endl;
+
+    //std::cout<<"term 2: "<< atan(toyotaComs.sK*dist/(fabs(vehicleOdom.twist.twist.linear.x)))*180/PI<<" & dist: "<< dist <<" & odom.x: "<< fabs(vehicleOdom.twist.twist.linear.x) <<std::endl;
+    //std::cout<<"steer ratio: " << toyotaComs.steerRatio <<std::endl;
+
+    if(fabs(prev_steer_effort - steer_effort) >= toyotaComs.steerVehicleRate)
+    {
+        if(prev_steer_effort - steer_effort>=0)
+            steer_effort = prev_steer_effort - toyotaComs.steerVehicleRate;
+        else
+            steer_effort = prev_steer_effort + toyotaComs.steerVehicleRate;
+    }
+    std::cout<<"steer effort: " << steer_effort*toyotaComs.steerRatio <<std::endl;
+    if(steer_effort > 0 )
+       std::cout<< "steer to ***** RIGHT ****** " <<std::endl;
+    else if(steer_effort < 0)
+       std::cout<< "steer to ***** LEFT ****** " <<std::endl;
+
+    toyota_coms::vehicle_cmd.data.assign(2,0.0);
+    toyota_coms::vehicle_cmd.data.at(0) = steer_effort*toyotaComs.steerRatio;
+    toyota_coms::vehicle_cmd.data.at(1) = 0.8;  // 1.0 m/s
+    if(plannedPath.poses.size()==id+1)
+    {
+        std::cout<<"path done"<<std::endl;
+        //new_path_flag = false;
+        toyota_coms::vehicle_cmd.data.at(0) = 0.0;
+        toyota_coms::vehicle_cmd.data.at(1) = 0.0;
+    }
+
+    //return toyotaCmd;
+    prev_steer_effort = steer_effort;
+    return vehicle_cmd;
+}*/
